@@ -10,6 +10,7 @@ import os
 import json
 import time
 import shutil
+import threading
 import subprocess
 import xbmc
 import xbmcplugin
@@ -73,7 +74,8 @@ auth = addon.getSetting("auth")
 linuxUseShellScript = addon.getSetting("linuxUseShellScript") == "true"
 debug = addon.getSetting("debug") == "true"
 
-if len(language.split("-"))>1:
+country = addon.getSetting("country")
+if len(country)==0 and len(language.split("-"))>1:
     country = language.split("-")[1]
 
 trace_on = False
@@ -111,9 +113,11 @@ def newSession():
     return s
 session = newSession()
 
+def unescape(s):
+    return htmlParser.unescape(s)
+
 def load(url, post = None):
-    if debug:
-        print "URL: " + url
+    debug("URL: " + url)
 
     r = ""
     try:
@@ -203,6 +207,7 @@ def wiHome(type):
     match2 = re.compile('class="hd clearfix"><h3><a href="(.+?)">(.+?)<', re.DOTALL).findall(content)
     for temp, title, sliderID in match1:
         if not "hide-completely" in temp:
+            title = re.sub('<.(.+?)</.>', '', title)
             addDir(title.strip(), sliderID, 'listSliderVideos', "", type)
     for url, title in match2:
         if "WiAltGenre" in url or "WiSimilarsByViewType" in url or "WiRecentAdditionsGallery" in url:
@@ -365,11 +370,12 @@ def listVideo(videoID, title, thumbUrl, tvshowIsEpisode, hideMovies, type):
         coverFile = os.path.join(cacheFolderCoversTMDB, filename)
         coverFileNone = os.path.join(cacheFolderCoversTMDB, filenameNone)
         if not os.path.exists(coverFile) and not os.path.exists(coverFileNone):
+            debug("Downloading Cover art. videoType:"+videoTypeTemp+", videoID:" + videoID + ", title:"+titleTemp+", year:"+yearTemp)
             xbmc.executebuiltin('XBMC.RunScript('+downloadScript+', '+urllib.quote_plus(videoTypeTemp)+', '+urllib.quote_plus(videoID)+', '+urllib.quote_plus(titleTemp)+', '+urllib.quote_plus(yearTemp)+')')
     match = re.compile('src=".+?">.*?<.*?>(.+?)<', re.DOTALL).findall(videoDetails)
     desc = ""
     if match:
-        desc = htmlParser.unescape(match[0])
+        desc = htmlParser.unescape(match[0].decode("utf-8"))
     match = re.compile('Director:</dt><dd>(.+?)<', re.DOTALL).findall(videoDetails)
     director = ""
     if match:
@@ -382,7 +388,7 @@ def listVideo(videoID, title, thumbUrl, tvshowIsEpisode, hideMovies, type):
     rating = ""
     if rating:
         rating = match[0]
-    title = htmlParser.unescape(title)
+    title = htmlParser.unescape(title.decode("utf-8"))
     nextMode = "playVideoMain"
     if browseTvShows and videoType == "tvshow":
         nextMode = "listSeasons"
@@ -564,7 +570,7 @@ def addMyListToLibrary():
                 videoDetails = getVideoInfo(videoID)
                 match = re.compile('<span class="title ".*?>(.+?)<\/span>', re.DOTALL).findall(videoDetails)
                 title = match[0].strip()
-                title = htmlParser.unescape(title)
+                title = htmlParser.unescape(title.decode("utf-8"))
                 match = re.compile('<span class="year".*?>(.+?)<\/span>', re.DOTALL).findall(videoDetails)
                 year = ""
                 if match:
@@ -625,8 +631,7 @@ def playVideoMain(id):
             xbmc.executebuiltin('LIRC.Stop')
             
             call = '"'+browserScript+'" "'+url+'"';
-            if debug:
-                print "Browser Call: " + call
+            debug("Browser Call: " + call)
             subprocess.call(call, shell=True)
             
             xbmc.executebuiltin('LIRC.Start')
@@ -655,9 +660,10 @@ def playVideoMain(id):
             #xbmc.executebuiltin("RunPlugin(plugin://plugin.program.chrome.launcher/?url="+urllib.quote_plus(url)+"&mode=showSite&kiosk="+kiosk+")")
         if useUtility:
             subprocess.Popen('"'+utilityPath+'"', shell=False)
-    if remoteControl:
-        myWindow = window('window.xml', addon.getAddonInfo('path'), 'default',)
-        myWindow.doModal()
+
+    myWindow = window('window.xml', addon.getAddonInfo('path'), 'default',)
+    myWindow.doModal()
+    myWindow.stopWakeupThread() # insurance, in case self.close() wasn't the method by which the window was closed
 
 def launchChrome(url):
     kiosk = "yes"
@@ -744,6 +750,7 @@ def removeFromQueue(id):
 
 
 def login():
+    session.cookies.clear()
     content = load(urlMain+"/Login")
     match = re.compile('"LOCALE":"(.+?)"', re.DOTALL|re.IGNORECASE).findall(content)
     if match and not addon.getSetting("language"):
@@ -768,10 +775,19 @@ def login():
                 # Login Failed
                 xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,'+str(translation(30127))+',15000,'+icon+')')
                 return False
+            
             match = re.compile('"LOCALE":"(.+?)"', re.DOTALL|re.IGNORECASE).findall(content)
             if match and not addon.getSetting("language"):
                 addon.setSetting("language", match[0])
+            
+            match = re.compile('"COUNTRY":"(.+?)"', re.DOTALL|re.IGNORECASE).findall(content)
+            if match:
+                # always overwrite the country code, to cater for switching regions
+                debug("Setting Country: " + match[0])
+                addon.setSetting("country", match[0])
+                
             saveState()
+            
         if not addon.getSetting("profile") and not singleProfile:
             chooseProfile()
         elif not singleProfile and showProfiles:
@@ -781,15 +797,20 @@ def login():
         xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,'+str(translation(30126))+',10000,'+icon+')')
         return False
 
-
+def debug(message):
+    if debug:
+        print message
+        
 def chooseProfile():
     content = load("https://www.netflix.com/ProfilesGate?nextpage=http%3A%2F%2Fwww.netflix.com%2FDefault")
     match = re.compile('"profileName":"(.+?)".+?token":"(.+?)"', re.DOTALL).findall(content)
     if not len(match):
-        match = re.compile('"decodedName":"(.+?)".+?guid":"(.+?)".+?experience":"(.+?)"', re.DOTALL).findall(content)
+        match = re.compile('"firstName":"(.+?)".+?guid":"(.+?)".+?experience":"(.+?)"', re.DOTALL).findall(content)
     profiles = []
+    # remove any duplicated profile data found during page scrape
+    match = [item for count, item in enumerate(match) if item not in match[:count]]
     for p, t, e in match:
-        profile = {'name': p, 'token': t, 'isKids': e=='jfk'}
+        profile = {'name': unescape(p), 'token': t, 'isKids': e=='jfk'}
         profiles.append(profile)
     dialog = xbmcgui.Dialog()
     nr = dialog.select(translation(30113), [profile['name'] for profile in profiles])
@@ -896,6 +917,7 @@ def addDir(name, url, mode, iconimage, type=""):
 
 
 def addVideoDir(name, url, mode, iconimage, videoType="", desc="", duration="", year="", mpaa="", director="", genre="", rating=""):
+    name = name.encode("utf-8")
     filename = clean_filename(url)+".jpg"
     coverFile = os.path.join(cacheFolderCoversTMDB, filename)
     fanartFile = os.path.join(cacheFolderFanartTMDB, filename)
@@ -930,6 +952,7 @@ def addVideoDir(name, url, mode, iconimage, videoType="", desc="", duration="", 
 
 
 def addVideoDirR(name, url, mode, iconimage, videoType="", desc="", duration="", year="", mpaa="", director="", genre="", rating=""):
+    name = name.encode("utf-8")
     filename = clean_filename(url)+".jpg"
     coverFile = os.path.join(cacheFolderCoversTMDB, filename)
     fanartFile = os.path.join(cacheFolderFanartTMDB, filename)
@@ -998,10 +1021,41 @@ def addEpisodeDir(name, url, mode, iconimage, desc="", duration="", season="", e
 
 
 class window(xbmcgui.WindowXMLDialog):
+    def __init__(self, *args, **kwargs):
+        xbmcgui.WindowXMLDialog.__init__(self, *args, **kwargs)
+        self._stopEvent = threading.Event()
+        self._wakeUpThread = threading.Thread(target=self._wakeUpThreadProc)
+        self._wakeUpThread.start()
+
+    def _wakeUpThreadProc(self):
+        while not self._stopEvent.is_set():
+            if debug:
+                print "Netflixbmc: Sending wakeup to main UI to avoid idle/DPMS..."
+            xbmc.executebuiltin("playercontrol(wakeup)")
+            # bit of a hack above: wakeup is actually not a valid playercontrol argument,
+            # but there's no error printed if the argument isn't found and any playercontrol
+            # causes the DPMS/idle timeout to reset itself
+            self._stopEvent.wait(60)
+        if debug:
+            print "Netflixbmc: wakeup thread finishing."
+
+    def stopWakeupThread(self):
+        if debug:
+            print "Netflixbmc: stopping wakeup thread"
+        self._stopEvent.set()
+        self._wakeUpThread.join()
+
+    def close(self):
+        if debug:
+            print "Netflixbmc: closing dummy window"
+        self.stopWakeupThread()
+        xbmcgui.WindowXMLDialog.close(self)
+
     def onAction(self, action):
         ACTION_SELECT_ITEM = 7
         ACTION_PARENT_DIR = 9
         ACTION_PREVIOUS_MENU = 10
+        ACTION_PAUSE = 12
         ACTION_STOP = 13
         ACTION_SHOW_INFO = 11
         ACTION_SHOW_GUI = 18
@@ -1009,7 +1063,22 @@ class window(xbmcgui.WindowXMLDialog):
         ACTION_MOVE_RIGHT = 2
         ACTION_MOVE_UP = 3
         ACTION_MOVE_DOWN = 4
+        ACTION_PLAYER_PLAY = 79
+        ACTION_VOLUME_UP = 88
+        ACTION_VOLUME_DOWN = 89
+        ACTION_MUTE = 91
+        ACTION_CONTEXT_MENU = 117
+        ACTION_BUILT_IN_FUNCTION = 122
         KEY_BUTTON_BACK = 275
+        if not remoteControl and action != ACTION_BUILT_IN_FUNCTION:
+            # if we're not passing remote control actions, any non-autogenerated
+            # remote action that reaches here is a signal to close this dummy
+            # window as Chrome is gone
+            if debug:
+                print "Netflixbmc: Closing dummy window after action %d" % (action.getId())
+            self.close()
+            return
+
         if osWin:
             proc = subprocess.Popen('WMIC PROCESS get Caption', shell=True, stdout=subprocess.PIPE)
             procAll = ""
@@ -1032,26 +1101,41 @@ class window(xbmcgui.WindowXMLDialog):
             else:
                 self.close()
         elif osLinux:
-            proc = subprocess.Popen('/bin/ps ax', shell=True, stdout=subprocess.PIPE)
-            procAll = ""
-            for line in proc.stdout:
-                procAll+=line
-            if "chrome" in procAll or "chromium" in procAll:
-                if action in [ACTION_SHOW_INFO, ACTION_SHOW_GUI, ACTION_STOP, ACTION_PARENT_DIR, ACTION_PREVIOUS_MENU, KEY_BUTTON_BACK]:
-                    subprocess.Popen('xdotool key alt+F4', shell=True)
+            doClose = False
+            key=None
+            if action in [ACTION_SHOW_GUI, ACTION_STOP, ACTION_PARENT_DIR, ACTION_PREVIOUS_MENU, KEY_BUTTON_BACK]:
+                key="alt+F4"
+                doClose=True
+            elif action in [ ACTION_SELECT_ITEM, ACTION_PLAYER_PLAY, ACTION_PAUSE ]:
+                key="space"
+            elif action==ACTION_MOVE_LEFT:
+                key="Left"
+            elif action==ACTION_MOVE_RIGHT:
+                key="Right"
+            elif action==ACTION_MOVE_UP:
+                key="Up"
+            elif action==ACTION_MOVE_DOWN:
+                key="Down"
+            elif action==ACTION_SHOW_INFO:
+                key="question"
+            elif action==ACTION_VOLUME_UP:
+                key="bracketright"
+            elif action==ACTION_VOLUME_DOWN:
+                key="bracketleft"
+            elif action==ACTION_MUTE:
+                key="M"
+            elif action==ACTION_CONTEXT_MENU:
+                key="ctrl+alt+shift+d"
+            elif debug:
+                print "Netflixbmc: unmapped key action=%d" % (action.getId())
+            if key is not None:
+                p = subprocess.Popen('xdotool search --onlyvisible --class "google-chrome|Chromium" key %s' % key, shell=True)
+                p.wait()
+                # 0 for success, 127 if xdotool not found in PATH. Return code is 1 if window not found (indicating should close).
+                if not p.returncode in [0,127] or doClose:
                     self.close()
-                elif action==ACTION_SELECT_ITEM:
-                    subprocess.Popen('xdotool key Space', shell=True)
-                elif action==ACTION_MOVE_LEFT:
-                    subprocess.Popen('xdotool key Left', shell=True)
-                elif action==ACTION_MOVE_RIGHT:
-                    subprocess.Popen('xdotool key Right', shell=True)
-                elif action==ACTION_MOVE_UP:
-                    subprocess.Popen('xdotool key Up', shell=True)
-                elif action==ACTION_MOVE_DOWN:
-                    subprocess.Popen('xdotool key Down', shell=True)
-            else:
-                self.close()
+                if debug:
+                    print "Netflixbmc: remote action=%d key=%s xdotool result=%d" % (action.getId(), key, p.returncode)
         elif osOSX:
             proc = subprocess.Popen('/bin/ps ax', shell=True, stdout=subprocess.PIPE)
             procAll = ""
