@@ -1,12 +1,8 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
-import HTMLParser
-import urllib
-import requests
-import socket
+import os
 import sys
 import re
-import os
 import json
 import time
 import shutil
@@ -18,6 +14,43 @@ import xbmcgui
 import xbmcaddon
 import xbmcvfs
 from resources.lib import chrome_cookies
+
+
+trace_on = False
+try:
+    pass
+    # import pydevd
+    # #pydevd.set_pm_excepthook()
+    # pydevd.settrace('192.168.0.16', port=51380, stdoutToServer=True, stderrToServer=True)
+    # trace_on = True
+except BaseException as ex:
+    pass
+
+try:
+    # Add support for newer SSL connections in requests
+    # Ensure OpenSSL is installed with system package manager on linux
+    import resources
+    sys.path.append(os.path.dirname(resources.lib.__file__))
+    #import pyasn1
+    #import ndg
+    import resources.lib.pyOpenSSL
+    import OpenSSL
+
+    # https://urllib3.readthedocs.org/en/latest/security.html#openssl-pyopenssl
+    import requests.packages.urllib3.contrib.pyopenssl
+    requests.packages.urllib3.contrib.pyopenssl.inject_into_urllib3()
+
+    verify_ssl = True
+except Exception as ex:
+    import traceback
+    print traceback.format_exc()
+    print "ERROR importing OpenSSL handler"
+    verify_ssl = False
+
+import requests
+import HTMLParser
+import urllib
+import socket
 
 try:
     import cPickle as pickle
@@ -71,22 +104,13 @@ viewIdActivity = addon.getSetting("viewIdActivity")
 winBrowser = int(addon.getSetting("winBrowserNew"))
 language = addon.getSetting("language")
 auth = addon.getSetting("auth")
+authMyList = addon.getSetting("authMyList")
 linuxUseShellScript = addon.getSetting("linuxUseShellScript") == "true"
 debug = addon.getSetting("debug") == "true"
 
 country = addon.getSetting("country")
 if len(country)==0 and len(language.split("-"))>1:
     country = language.split("-")[1]
-
-trace_on = False
-try:
-    pass
-    # import pydevd
-    # #pydevd.set_pm_excepthook()
-    # pydevd.settrace('192.168.0.16', port=51380, stdoutToServer=True, stderrToServer=True)
-    # trace_on = True
-except BaseException as ex:
-    pass
 
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.poolmanager import PoolManager
@@ -122,17 +146,17 @@ def load(url, post = None):
     r = ""
     try:
         if post:
-            r = session.post(url, data=post, verify=False).text
+            r = session.post(url, data=post, verify=verify_ssl).text
         else:
-            r = session.get(url, verify=False).text
+            r = session.get(url, verify=verify_ssl).text
     except AttributeError:
         xbmc.executebuiltin('XBMC.Notification(NetfliXBMC Error: Cookies have been deleted. Please try again.,10000,'+icon+')')
         newSession()
         saveState()
         if post:
-            r = session.post(url, data=post, verify=False).text
+            r = session.post(url, data=post, verify=verify_ssl).text
         else:
-            r = session.get(url, verify=False).text
+            r = session.get(url, verify=verify_ssl).text
 
     return r.encode('utf-8')
 
@@ -322,7 +346,10 @@ def listSearchVideos(url, type):
         xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,'+str(translation(30146))+',5000,'+icon+')')
 
 def clean_filename(n, chars=None):
-    return (''.join(c for c in unicode(n, "utf-8") if c not in '/\\:?"*|<>')).strip(chars)
+    if isinstance(n, str):
+        return (''.join(c for c in unicode(n, "utf-8") if c not in '/\\:?"*|<>')).strip(chars)
+    elif isinstance(n, unicode):
+        return (''.join(c for c in n if c not in '/\\:?"*|<>')).strip(chars)
 
 def listVideo(videoID, title, thumbUrl, tvshowIsEpisode, hideMovies, type):
     videoDetails = getVideoInfo(videoID)
@@ -539,10 +566,23 @@ def getSeriesInfo(seriesID):
         fh = xbmcvfs.File(cacheFile, 'w')
         fh.write(content)
         fh.close()
+
+    # if netflix throws exception they may still return content after the exception
+    index = content.find('{"title":')
+    if index != -1:
+        content = content[index:]
+
     return content
 
 
 def addMyListToLibrary():
+
+    if not singleProfile:
+        token = ""
+        if addon.getSetting("profile"):
+            token = addon.getSetting("profile")
+            load("https://www.netflix.com/SwitchProfile?tkn="+token)
+
     content = load(urlMain+"/MyList?leid=595&link=seeall")
     if not 'id="page-LOGIN"' in content:
         if singleProfile and 'id="page-ProfilesGate"' in content:
@@ -566,6 +606,7 @@ def addMyListToLibrary():
                 match = match4
             elif match5:
                 match = match5
+                
             for videoID in match:
                 videoDetails = getVideoInfo(videoID)
                 match = re.compile('<span class="title ".*?>(.+?)<\/span>', re.DOTALL).findall(videoDetails)
@@ -595,10 +636,9 @@ def addMyListToLibrary():
                 xbmc.executebuiltin('UpdateLibrary(video)')
 
 def playVideo(id):
-    playVideoMain(id)
-    xbmc.sleep(5000)
     listitem = xbmcgui.ListItem(path=fakeVidPath)
     xbmcplugin.setResolvedUrl(pluginhandle, True, listitem)
+    playVideoMain(id)
     xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
 
 
@@ -729,7 +769,6 @@ def resetAddon():
           except:
               pass
 
-
 def search(type):
     keyboard = xbmc.Keyboard('', translation(30008))
     keyboard.doModal()
@@ -737,17 +776,22 @@ def search(type):
         search_string = keyboard.getText().replace(" ", "+")
         listSearchVideos("http://api-global.netflix.com/desktop/search/instantsearch?esn=www&term="+search_string+"&locale="+language+"&country="+country+"&authURL="+auth+"&_retry=0&routing=redirect", type)
 
-
 def addToQueue(id):
-    load(urlMain+"/AddToQueue?movieid="+id+"&authURL="+auth)
-    xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,'+str(translation(30144))+',3000,'+icon+')')
-
+    if authMyList:
+        encodedAuth = urllib.urlencode({'authURL': authMyList})
+        load(urlMain+"/AddToQueue?movieid="+id+"&qtype=INSTANT&"+encodedAuth)
+        xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,'+str(translation(30144))+',3000,'+icon+')')
+    else:
+        debug("Attempted to addToQueue without valid authMyList")
 
 def removeFromQueue(id):
-    load(urlMain+"/QueueDelete?movieid="+id+"&authURL="+auth)
-    xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,'+str(translation(30145))+',3000,'+icon+')')
-    xbmc.executebuiltin("Container.Refresh")
-
+    if authMyList:
+        encodedAuth = urllib.urlencode({'authURL': authMyList})
+        load(urlMain+"/QueueDelete?"+encodedAuth+"&qtype=ED&movieid="+id)
+        xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,'+str(translation(30145))+',3000,'+icon+')')
+        xbmc.executebuiltin("Container.Refresh")
+    else:
+         debug("Attempted to removeFromQueue without valid authMyList")
 
 def login():
     session.cookies.clear()
@@ -787,11 +831,14 @@ def login():
                 addon.setSetting("country", match[0])
                 
             saveState()
-            
         if not addon.getSetting("profile") and not singleProfile:
             chooseProfile()
         elif not singleProfile and showProfiles:
             chooseProfile()
+        elif not singleProfile and not showProfiles:
+            loadProfile()
+        else:
+            getMyListChangeAuthorisation()
         return True
     else:
         xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,'+str(translation(30126))+',10000,'+icon+')')
@@ -800,7 +847,16 @@ def login():
 def debug(message):
     if debug:
         print message
-        
+
+def loadProfile():
+    savedProfile = addon.getSetting("profile")
+    if savedProfile:
+        load("https://api-global.netflix.com/desktop/account/profiles/switch?switchProfileGuid="+savedProfile)
+        saveState()
+    else:
+        debug("LoadProfile: No stored profile found")
+    getMyListChangeAuthorisation()
+
 def chooseProfile():
     content = load("https://www.netflix.com/ProfilesGate?nextpage=http%3A%2F%2Fwww.netflix.com%2FDefault")
     match = re.compile('"profileName":"(.+?)".+?token":"(.+?)"', re.DOTALL).findall(content)
@@ -820,7 +876,14 @@ def chooseProfile():
         addon.setSetting("profile", selectedProfile['token'])
         addon.setSetting("isKidsProfile", 'true' if selectedProfile['isKids'] else 'false')
         saveState()
+    getMyListChangeAuthorisation()
 
+def getMyListChangeAuthorisation():
+    content = load(urlMain+"/WiHome")
+    match = re.compile('"xsrf":"(.+?)"', re.DOTALL).findall(content)
+    if match:
+        authMyList = match[0]
+        addon.setSetting("authMyList", match[0])
 
 def forceChooseProfile():
     addon.setSetting("singleProfile", "false")
@@ -829,13 +892,11 @@ def forceChooseProfile():
 
 
 def addMovieToLibrary(movieID, title, singleUpdate=True):
-    movieFolderName = clean_filename(title, ' .').strip(' .')
-    dir = os.path.join(libraryFolderMovies, movieFolderName)
-    if not os.path.isdir(dir):
-        xbmcvfs.mkdir(dir)
-        fh = xbmcvfs.File(os.path.join(dir, "movie.strm"), 'w')
-        fh.write("plugin://plugin.video.netflixbmc/?mode=playVideo&url="+movieID)
-        fh.close()
+    movieFolderName = clean_filename(title+".strm", ' .').strip(' .')
+    dirAndFilename = os.path.join(libraryFolderMovies, movieFolderName)
+    fh = xbmcvfs.File(dirAndFilename, 'w')
+    fh.write("plugin://plugin.video.netflixbmc/?mode=playVideo&url="+movieID)
+    fh.close()
     if updateDB and singleUpdate:
         xbmc.executebuiltin('UpdateLibrary(video)')
 
@@ -1143,11 +1204,10 @@ class window(xbmcgui.WindowXMLDialog):
                 procAll+=line
             if "chrome" in procAll:
                 if action in [ACTION_SHOW_INFO, ACTION_SHOW_GUI, ACTION_STOP, ACTION_PARENT_DIR, ACTION_PREVIOUS_MENU, KEY_BUTTON_BACK]:
-                    subprocess.Popen('cliclick kd:alt', shell=True)
-                    subprocess.Popen('cliclick kp:f4', shell=True)
+                    subprocess.Popen('cliclick kd:cmd t:q ku:cmd', shell=True)
                     self.close()
                 elif action==ACTION_SELECT_ITEM:
-                    subprocess.Popen('cliclick kp:return', shell=True)
+                    subprocess.Popen('cliclick t:p', shell=True)
                 elif action==ACTION_MOVE_LEFT:
                     subprocess.Popen('cliclick kp:arrow-left', shell=True)
                 elif action==ACTION_MOVE_RIGHT:
