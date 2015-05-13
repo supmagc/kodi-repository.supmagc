@@ -28,6 +28,8 @@ from git import Repo, RemoteProgress
 from zipfile import ZipFile
 from shutil import copytree, ignore_patterns, rmtree
 
+g_ssh = "C:\Program Files (x86)\PuTTY\plink.exe";
+g_sshkey = "D:\Jelle\Documents\Ssh\github.ppk"
 g_projects = ['plugin.video.netflixbmc']
  
 # Compatibility with 3.0, 3.1 and 3.2 not supporting u"" literals
@@ -56,7 +58,7 @@ class Generator:
         self._generate_md5_file()
         self._generate_zip_file()
         self._package_addons()
-        self._git_commit_push()
+        #self._git_commit_push()
         # notify user
         print("Finished updating addons xml and md5 files")
         
@@ -168,7 +170,10 @@ class Generator:
         assert not repo.bare
         
         git = repo.git
-        git.custom_environment(GIT_SSH="C:\\Program Files\\TortoiseGit\\bin\\TortoiseGitPLink.exe")
+        command = "\"%s\" -i \"%s\"" % (g_ssh, g_sshkey)
+        print "Ssh: " + command
+        git.custom_environment(GIT_SSH=g_ssh)
+        git.custom_environment(GIT_SSH_COMMAND=command)
         print git.checkout('master')
         
         # index = repo.index
