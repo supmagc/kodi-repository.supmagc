@@ -15,42 +15,40 @@ import xbmcaddon
 import xbmcvfs
 from resources.lib import chrome_cookies
 
-
 trace_on = False
-try:
-    pass
-    # import pydevd
-    # #pydevd.set_pm_excepthook()
-    # pydevd.settrace('192.168.0.16', port=51380, stdoutToServer=True, stderrToServer=True)
-    # trace_on = True
-except BaseException as ex:
-    pass
+addon = xbmcaddon.Addon()
 
-try:
-    # Add support for newer SSL connections in requests
-    # Ensure OpenSSL is installed with system package manager on linux
-    import resources
-    sys.path.append(os.path.dirname(resources.lib.__file__))
-    #import pyasn1
-    #import ndg
-    import resources.lib.pyOpenSSL
-    import OpenSSL
-
-    # https://urllib3.readthedocs.org/en/latest/security.html#openssl-pyopenssl
-    import requests.packages.urllib3.contrib.pyopenssl
-    requests.packages.urllib3.contrib.pyopenssl.inject_into_urllib3()
-
-    verify_ssl = True
-except Exception as ex:
-    import traceback
-    print traceback.format_exc()
-    print "ERROR importing OpenSSL handler"
-    verify_ssl = False
+if addon.getSetting("sslEnable") == "true":
+    try:
+        # Add support for newer SSL connections in requests
+        # Ensure OpenSSL is installed with system package manager on linux
+        import resources
+        sys.path.append(os.path.dirname(resources.lib.__file__))
+        import resources.lib.pyOpenSSL
+        import OpenSSL
+        # https://urllib3.readthedocs.org/en/latest/security.html#openssl-pyopenssl
+        import requests.packages.urllib3.contrib.pyopenssl
+        requests.packages.urllib3.contrib.pyopenssl.inject_into_urllib3()
+        verify_ssl = True
+    except Exception as ex:
+        import traceback
+        print traceback.format_exc()
+        print "ERROR importing OpenSSL handler"
+        verify_ssl = False
 
 import requests
 import HTMLParser
 import urllib
 import socket
+
+if addon.getSetting("sslEnable") == "false":
+    verify_ssl = False
+    print "SSL is Disabled"
+    #supress warnings
+    from requests.packages.urllib3.exceptions import InsecureRequestWarning
+    from requests.packages.urllib3.exceptions import InsecurePlatformWarning
+    requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+    requests.packages.urllib3.disable_warnings(InsecurePlatformWarning)
 
 try:
     import cPickle as pickle
@@ -60,8 +58,10 @@ except ImportError:
 socket.setdefaulttimeout(40)
 pluginhandle = int(sys.argv[1])
 
+while (addon.getSetting("username") == "" or addon.getSetting("password") == ""):
+    addon.openSettings()
+
 htmlParser = HTMLParser.HTMLParser()
-addon = xbmcaddon.Addon()
 addonID = addon.getAddonInfo('id')
 osWin = xbmc.getCondVisibility('system.platform.windows')
 osLinux = xbmc.getCondVisibility('system.platform.linux')
@@ -142,7 +142,6 @@ def unescape(s):
 
 def load(url, post = None):
     debug("URL: " + url)
-
     r = ""
     try:
         if post:
@@ -157,7 +156,6 @@ def load(url, post = None):
             r = session.post(url, data=post, verify=verify_ssl).text
         else:
             r = session.get(url, verify=verify_ssl).text
-
     return r.encode('utf-8')
 
 def saveState():
@@ -193,11 +191,6 @@ if os.path.exists(sessionFile):
     fh.close()
     session = pickle.loads(content)
 
-while (username == "" or password == ""):
-    addon.openSettings()
-    username = addon.getSetting("username")
-    password = addon.getSetting("password")
-
 if not addon.getSetting("html5MessageShown"):
     dialog = xbmcgui.Dialog()
     ok = dialog.ok('IMPORTANT!', 'NetfliXBMC >=1.3.0 only supports the new Netflix HTML5 User Interface! The only browsers working with HTML5 DRM playback for now are Chrome>=37 (Win/OSX/Linux) and IExplorer>=11 (Win8.1 only). Make sure you have the latest version installed and check your Netflix settings. Using Silverlight may still partially work, but its not supported anymore. The HTML5 Player is also much faster, supports 1080p and gives you a smoother playback (especially on Linux). See forum.xbmc.org for more info...')
@@ -209,7 +202,18 @@ def index():
         addDir(translation(30011), "", 'main', "", "movie")
         addDir(translation(30012), "", 'main', "", "tv")
         addDir(translation(30143), "", 'wiHome', "", "both")
+        if not singleProfile:
+            profileName = addon.getSetting("profileName")
+            addDir(translation(30113) + ' - [COLOR blue]' + profileName + '[/COLOR]', "", 'profileDisplayUpdate', 'DefaultAddonService.png', type, contextEnable=False)
         xbmcplugin.endOfDirectory(pluginhandle)
+
+
+def profileDisplayUpdate():
+    menuPath =  xbmc.getInfoLabel('Container.FolderPath')
+    if not showProfiles:
+        addon.setSetting("profile", None)
+        saveState()
+    xbmc.executebuiltin('Container.Update('+menuPath+')')
 
 
 def main(type):
@@ -242,6 +246,7 @@ def wiHome(type):
 def listVideos(url, type):
     pDialog = xbmcgui.DialogProgress()
     pDialog.create('NetfliXBMC', translation(30142)+"...")
+    pDialog.update( 0, translation(30142)+"...")
     xbmcplugin.setContent(pluginhandle, "movies")
     content = load(url)
     #content = load(url) # Terrible... currently first call doesn't have the content, it requires two calls....
@@ -293,6 +298,7 @@ def listVideos(url, type):
 def listSliderVideos(sliderID, type):
     pDialog = xbmcgui.DialogProgress()
     pDialog.create('NetfliXBMC', translation(30142)+"...")
+    pDialog.update( 0, translation(30142)+"...")
     xbmcplugin.setContent(pluginhandle, "movies")
     content = load(urlMain+"/WiHome")
     if not 'id="page-LOGIN"' in content:
@@ -330,6 +336,7 @@ def listSliderVideos(sliderID, type):
 def listSearchVideos(url, type):
     pDialog = xbmcgui.DialogProgress()
     pDialog.create('NetfliXBMC', translation(30142)+"...")
+    pDialog.update( 0, translation(30142)+"...")
     xbmcplugin.setContent(pluginhandle, "movies")
     content = load(url)
     content = json.loads(content)
@@ -366,7 +373,7 @@ def listVideo(videoID, title, thumbUrl, tvshowIsEpisode, hideMovies, type):
     match = re.compile('<span class="mpaaRating.*?>(.+?)<', re.DOTALL).findall(videoDetails)
     mpaa = ""
     if match:
-        mpaa = match[0]
+        mpaa = match[0].strip()
     match = re.compile('<span class="duration.*?>(.+?)<', re.DOTALL).findall(videoDetails)
     duration = ""
     if match:
@@ -388,8 +395,6 @@ def listVideo(videoID, title, thumbUrl, tvshowIsEpisode, hideMovies, type):
         titleTemp = title
         if " - " in titleTemp:
             titleTemp = titleTemp[titleTemp.find(" - ")+3:]
-        if ": " in titleTemp:
-            titleTemp = titleTemp[:titleTemp.find(": ")]
         if "-" in yearTemp:
             yearTemp = yearTemp.split("-")[0]
         filename = clean_filename(videoID)+".jpg"
@@ -402,7 +407,10 @@ def listVideo(videoID, title, thumbUrl, tvshowIsEpisode, hideMovies, type):
     match = re.compile('src=".+?">.*?<.*?>(.+?)<', re.DOTALL).findall(videoDetails)
     desc = ""
     if match:
-        desc = htmlParser.unescape(match[0].decode("utf-8"))
+        descTemp = match[0].decode("utf-8", 'ignore')
+        #replace all embedded unicode in unicode (Norwegian problem)
+        descTemp = descTemp.replace('u2013', u'\u2013').replace('u2026', u'\u2026')
+        desc = htmlParser.unescape(descTemp)
     match = re.compile('Director:</dt><dd>(.+?)<', re.DOTALL).findall(videoDetails)
     director = ""
     if match:
@@ -411,9 +419,9 @@ def listVideo(videoID, title, thumbUrl, tvshowIsEpisode, hideMovies, type):
     genre = ""
     if match:
         genre = match[0]
-    match = re.compile('<span class="rating.*?>(.+?)<', re.DOTALL).findall(videoDetails)
+    match = re.compile('<span class="rating">(.+?)<', re.DOTALL).findall(videoDetails)
     rating = ""
-    if rating:
+    if match:
         rating = match[0]
     title = htmlParser.unescape(title.decode("utf-8"))
     nextMode = "playVideoMain"
@@ -481,11 +489,11 @@ def listEpisodes(seriesID, season):
             if episodeSeason == season:
                 episodeID = str(item["episodeId"])
                 episodeNr = str(item["episode"])
-                episodeTitle = item["title"].encode('utf-8')
+                episodeTitle = (episodeNr + ".  " + item["title"]).encode('utf-8')
                 duration = item["runtime"]
                 bookmarkPosition = item["bookmarkPosition"]
                 playcount=0
-                if (float(bookmarkPosition)/float(duration))>=0.9:
+                if (duration>0 and float(bookmarkPosition)/float(duration))>=0.9:
                     playcount=1
                 desc = item["synopsis"].encode('utf-8')
                 try:
@@ -501,6 +509,7 @@ def listEpisodes(seriesID, season):
 def listViewingActivity(type):
     pDialog = xbmcgui.DialogProgress()
     pDialog.create('NetfliXBMC', translation(30142)+"...")
+    pDialog.update( 0, translation(30142)+"...")
     xbmcplugin.setContent(pluginhandle, "movies")
     content = load(urlMain+"/WiViewingActivity")
     count = 0
@@ -793,7 +802,21 @@ def removeFromQueue(id):
     else:
          debug("Attempted to removeFromQueue without valid authMyList")
 
+
+def displayLoginProgress(progressWindow, value, message):
+    progressWindow.update( value, "", message, "" )
+    if progressWindow.iscanceled():
+        return False
+    else:
+        return True
+
+
 def login():
+    #setup login progress display
+    loginProgress = xbmcgui.DialogProgress()
+    loginProgress.create('NETFLIXBMC', str(translation(30216)) + '...')
+    displayLoginProgress(loginProgress, 25, str(translation(30217)))
+
     session.cookies.clear()
     content = load(urlMain+"/Login")
     match = re.compile('"LOCALE":"(.+?)"', re.DOTALL|re.IGNORECASE).findall(content)
@@ -814,23 +837,23 @@ def login():
                         "RememberMe":"on"
                         }
             #content = load("https://signup.netflix.com/Login", "authURL="+urllib.quote_plus(authUrl)+"&email="+urllib.quote_plus(username)+"&password="+urllib.quote_plus(password)+"&RememberMe=on")
+            displayLoginProgress(loginProgress, 50, str(translation(30218)))
             content = load("https://signup.netflix.com/Login", postdata)
             if 'id="page-LOGIN"' in content:
                 # Login Failed
                 xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,'+str(translation(30127))+',15000,'+icon+')')
                 return False
-            
             match = re.compile('"LOCALE":"(.+?)"', re.DOTALL|re.IGNORECASE).findall(content)
             if match and not addon.getSetting("language"):
                 addon.setSetting("language", match[0])
-            
             match = re.compile('"COUNTRY":"(.+?)"', re.DOTALL|re.IGNORECASE).findall(content)
             if match:
                 # always overwrite the country code, to cater for switching regions
                 debug("Setting Country: " + match[0])
                 addon.setSetting("country", match[0])
-                
             saveState()
+            displayLoginProgress(loginProgress, 75, str(translation(30219)))
+
         if not addon.getSetting("profile") and not singleProfile:
             chooseProfile()
         elif not singleProfile and showProfiles:
@@ -839,9 +862,16 @@ def login():
             loadProfile()
         else:
             getMyListChangeAuthorisation()
+        if loginProgress:
+            if not displayLoginProgress(loginProgress, 100, str(translation(30220))):
+                return False
+            xbmc.sleep(500)
+            loginProgress.close()
         return True
     else:
         xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,'+str(translation(30126))+',10000,'+icon+')')
+        if loginProgress:
+            loginProgress.close()
         return False
 
 def debug(message):
@@ -859,24 +889,46 @@ def loadProfile():
 
 def chooseProfile():
     content = load("https://www.netflix.com/ProfilesGate?nextpage=http%3A%2F%2Fwww.netflix.com%2FDefault")
+    matchType = 0
     match = re.compile('"profileName":"(.+?)".+?token":"(.+?)"', re.DOTALL).findall(content)
+    if len(match):
+        matchType = 1
     if not len(match):
         match = re.compile('"firstName":"(.+?)".+?guid":"(.+?)".+?experience":"(.+?)"', re.DOTALL).findall(content)
+        if len(match):
+            matchType = 1
+    if not len(match):
+        match = re.compile('"experience":"(.+?)".+?guid":"(.+?)".+?profileName":"(.+?)"', re.DOTALL).findall(content)
+        if len(match):
+            matchType = 2
     profiles = []
     # remove any duplicated profile data found during page scrape
     match = [item for count, item in enumerate(match) if item not in match[:count]]
-    for p, t, e in match:
-        profile = {'name': unescape(p), 'token': t, 'isKids': e=='jfk'}
-        profiles.append(profile)
-    dialog = xbmcgui.Dialog()
-    nr = dialog.select(translation(30113), [profile['name'] for profile in profiles])
-    if nr >= 0:
-        selectedProfile = profiles[nr]
+
+    if matchType == 1:
+        for p, t, e in match:
+            profile = {'name': unescape(p), 'token': t, 'isKids': e=='jfk'}
+            profiles.append(profile)
+    elif matchType == 2:
+        for e, t, p in match:
+            profile = {'name': unescape(p), 'token': t, 'isKids': e=='jfk'}
+            profiles.append(profile)
+
+    if matchType > 0:
+        dialog = xbmcgui.Dialog()
+        nr = dialog.select(translation(30113), [profile['name'] for profile in profiles])
+        if nr >= 0:
+            selectedProfile = profiles[nr]
+        else:
+            selectedProfile = profiles[0]
         load("https://api-global.netflix.com/desktop/account/profiles/switch?switchProfileGuid="+selectedProfile['token'])
         addon.setSetting("profile", selectedProfile['token'])
         addon.setSetting("isKidsProfile", 'true' if selectedProfile['isKids'] else 'false')
+        addon.setSetting("profileName", selectedProfile['name'])
         saveState()
-    getMyListChangeAuthorisation()
+        getMyListChangeAuthorisation()
+    else:
+        debug("Netflixbmc::chooseProfile: No profiles were found")
 
 def getMyListChangeAuthorisation():
     content = load(urlMain+"/WiHome")
@@ -938,8 +990,8 @@ def addSeriesToLibrary(seriesID, seriesTitle, season, singleUpdate=True):
 def playTrailer(title):
     try:
         content = load("http://gdata.youtube.com/feeds/api/videos?vq="+title.strip().replace(" ", "+")+"+trailer&racy=include&orderby=relevance")
-        match = re.compile('<id>http://gdata.youtube.com/feeds/api/videos/(.+?)</id>', re.DOTALL).findall(content.split('<entry>')[1])
-        xbmc.Player().play("plugin://plugin.video.youtube/?path=/root/video&action=play_video&videoid=" + match[0])
+        match = re.compile('<id>http://gdata.youtube.com/feeds/api/videos/(.+?)</id>', re.DOTALL).findall(content.split('<entry>')[2])
+        xbmc.Player().play("plugin://plugin.video.youtube/play/?video_id=" + match[0])
     except:
         pass
 
@@ -959,7 +1011,7 @@ def parameters_string_to_dict(parameters):
     return paramDict
 
 
-def addDir(name, url, mode, iconimage, type=""):
+def addDir(name, url, mode, iconimage, type="", contextEnable=True):
     name = htmlParser.unescape(name)
     u = sys.argv[0]+"?url="+urllib.quote_plus(url)+"&mode="+str(mode)+"&type="+str(type)+"&thumb="+urllib.quote_plus(iconimage)
     ok = True
@@ -969,15 +1021,19 @@ def addDir(name, url, mode, iconimage, type=""):
     entries = []
     if "/MyList" in url:
         entries.append((translation(30122), 'RunPlugin(plugin://plugin.video.netflixbmc/?mode=addMyListToLibrary)',))
-    if not singleProfile:
-        entries.append((translation(30110), 'RunPlugin(plugin://plugin.video.netflixbmc/?mode=chooseProfile)',))
     liz.setProperty("fanart_image", defaultFanart)
-    liz.addContextMenuItems(entries)
+    if contextEnable:
+        liz.addContextMenuItems(entries)
+    else:
+        emptyEntries = []
+        liz.addContextMenuItems(emptyEntries, replaceItems=True)
     ok = xbmcplugin.addDirectoryItem(handle=int(sys.argv[1]), url=u, listitem=liz, isFolder=True)
     return ok
 
 
 def addVideoDir(name, url, mode, iconimage, videoType="", desc="", duration="", year="", mpaa="", director="", genre="", rating=""):
+    if duration:
+        duration = str(int(duration) * 60)
     name = name.encode("utf-8")
     filename = clean_filename(url)+".jpg"
     coverFile = os.path.join(cacheFolderCoversTMDB, filename)
@@ -987,7 +1043,7 @@ def addVideoDir(name, url, mode, iconimage, videoType="", desc="", duration="", 
     u = sys.argv[0]+"?url="+urllib.quote_plus(url)+"&mode="+str(mode)+"&name="+urllib.quote_plus(name)+"&thumb="+urllib.quote_plus(iconimage)
     ok = True
     liz = xbmcgui.ListItem(name, iconImage="DefaultTVShows.png", thumbnailImage=iconimage)
-    liz.setInfo(type="video", infoLabels={"title": name, "plot": desc, "duration": duration, "year": year, "mpaa": mpaa, "director": director, "genre": genre, "rating": rating})
+    liz.setInfo(type="video", infoLabels={"title": name, "plot": desc, "duration": duration, "year": year, "mpaa": mpaa, "director": director, "genre": genre, "rating": float(rating)})
     if os.path.exists(fanartFile):
         liz.setProperty("fanart_image", fanartFile)
     elif os.path.exists(coverFile):
@@ -1013,6 +1069,8 @@ def addVideoDir(name, url, mode, iconimage, videoType="", desc="", duration="", 
 
 
 def addVideoDirR(name, url, mode, iconimage, videoType="", desc="", duration="", year="", mpaa="", director="", genre="", rating=""):
+    if duration:
+        duration = str(int(duration) * 60)
     name = name.encode("utf-8")
     filename = clean_filename(url)+".jpg"
     coverFile = os.path.join(cacheFolderCoversTMDB, filename)
@@ -1022,7 +1080,7 @@ def addVideoDirR(name, url, mode, iconimage, videoType="", desc="", duration="",
     u = sys.argv[0]+"?url="+urllib.quote_plus(url)+"&mode="+str(mode)+"&name="+urllib.quote_plus(name)+"&thumb="+urllib.quote_plus(iconimage)
     ok = True
     liz = xbmcgui.ListItem(name, iconImage="DefaultTVShows.png", thumbnailImage=iconimage)
-    liz.setInfo(type="video", infoLabels={"title": name, "plot": desc, "duration": duration, "year": year, "mpaa": mpaa, "director": director, "genre": genre, "rating": rating})
+    liz.setInfo(type="video", infoLabels={"title": name, "plot": desc, "duration": duration, "year": year, "mpaa": mpaa, "director": director, "genre": genre, "rating": float(rating)})
     if os.path.exists(fanartFile):
         liz.setProperty("fanart_image", fanartFile)
     elif os.path.exists(coverFile):
@@ -1066,6 +1124,8 @@ def addSeasonDir(name, url, mode, iconimage, seriesName, seriesID):
 
 
 def addEpisodeDir(name, url, mode, iconimage, desc="", duration="", season="", episodeNr="", seriesID="", playcount=""):
+    if duration:
+        duration = str(int(duration) * 60)
     filename = clean_filename(seriesID)+".jpg"
     fanartFile = os.path.join(cacheFolderFanartTMDB, filename)
     coverFile = os.path.join(cacheFolderCoversTMDB, filename)
@@ -1165,7 +1225,7 @@ class window(xbmcgui.WindowXMLDialog):
             doClose = False
             key=None
             if action in [ACTION_SHOW_GUI, ACTION_STOP, ACTION_PARENT_DIR, ACTION_PREVIOUS_MENU, KEY_BUTTON_BACK]:
-                key="alt+F4"
+                key="control+shift+q"
                 doClose=True
             elif action in [ ACTION_SELECT_ITEM, ACTION_PLAYER_PLAY, ACTION_PAUSE ]:
                 key="space"
@@ -1173,16 +1233,12 @@ class window(xbmcgui.WindowXMLDialog):
                 key="Left"
             elif action==ACTION_MOVE_RIGHT:
                 key="Right"
-            elif action==ACTION_MOVE_UP:
-                key="Up"
-            elif action==ACTION_MOVE_DOWN:
-                key="Down"
             elif action==ACTION_SHOW_INFO:
                 key="question"
             elif action==ACTION_VOLUME_UP:
-                key="bracketright"
+                key="Up"
             elif action==ACTION_VOLUME_DOWN:
-                key="bracketleft"
+                key="Down"
             elif action==ACTION_MUTE:
                 key="M"
             elif action==ACTION_CONTEXT_MENU:
@@ -1283,10 +1339,11 @@ elif mode == 'addMovieToLibrary':
     addMovieToLibrary(url, name)
 elif mode == 'addSeriesToLibrary':
     addSeriesToLibrary(seriesID, name, url)
+elif mode == 'profileDisplayUpdate':
+    profileDisplayUpdate()
 else:
     index()
 
 
 if trace_on:
     pydevd.stoptrace()
-
