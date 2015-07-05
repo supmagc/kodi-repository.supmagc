@@ -30,7 +30,7 @@ from shutil import copytree, ignore_patterns, rmtree
 
 g_ssh = "C:\Program Files (x86)\PuTTY\plink.exe";
 g_sshkey = "D:\Jelle\Documents\Ssh\github.ppk"
-g_projects = ['plugin.video.netflixbmc']
+g_projects = [] #'plugin.video.netflixbmc']
  
 # Compatibility with 3.0, 3.1 and 3.2 not supporting u"" literals
 if sys.version < '3':
